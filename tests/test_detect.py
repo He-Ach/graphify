@@ -201,38 +201,30 @@ def test_detect_handles_circular_symlinks(tmp_path):
     assert any("main.py" in f for f in result["files"]["code"])
 
 
-def test_classify_video_extensions():
-    """Video and audio file extensions should classify as VIDEO."""
-    from graphify.detect import FileType
-    assert classify_file(Path("lecture.mp4")) == FileType.VIDEO
-    assert classify_file(Path("podcast.mp3")) == FileType.VIDEO
-    assert classify_file(Path("talk.mov")) == FileType.VIDEO
-    assert classify_file(Path("recording.wav")) == FileType.VIDEO
-    assert classify_file(Path("webinar.webm")) == FileType.VIDEO
-    assert classify_file(Path("audio.m4a")) == FileType.VIDEO
+def test_classify_video_extensions_not_classified():
+    """Video and audio file extensions are no longer classified (video support dropped)."""
+    assert classify_file(Path("lecture.mp4")) is None
+    assert classify_file(Path("podcast.mp3")) is None
+    assert classify_file(Path("talk.mov")) is None
 
 
-def test_detect_includes_video_key(tmp_path):
-    """detect() result always includes a 'video' key even with no video files."""
+def test_detect_no_video_key(tmp_path):
+    """detect() result no longer includes a 'video' key."""
     (tmp_path / "main.py").write_text("x = 1")
     result = detect(tmp_path)
-    assert "video" in result["files"]
+    assert "video" not in result["files"]
 
 
-def test_detect_finds_video_files(tmp_path):
-    """detect() correctly counts video files and does not add them to word count."""
+def test_detect_ignores_video_files(tmp_path):
+    """detect() does not classify video/audio files."""
     (tmp_path / "lecture.mp4").write_bytes(b"fake video data")
     (tmp_path / "notes.md").write_text("# Notes\nSome content here.")
     result = detect(tmp_path)
-    assert len(result["files"]["video"]) == 1
-    assert any("lecture.mp4" in f for f in result["files"]["video"])
-    # total_words should not include video files (they have no readable text)
-    assert result["total_words"] >= 0  # won't crash
+    assert not any("lecture.mp4" in f for flist in result["files"].values() for f in flist)
 
 
 def test_detect_video_not_in_words(tmp_path):
-    """Video files do not contribute to total_words."""
+    """Video files do not appear in any file list and word count stays 0."""
     (tmp_path / "clip.mp4").write_bytes(b"\x00" * 100)
     result = detect(tmp_path)
-    # Only video file present — total_words should be 0
     assert result["total_words"] == 0

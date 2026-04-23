@@ -2529,7 +2529,209 @@ def extract_powershell(path: Path) -> dict:
     return {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
 
 
-# ── Cross-file import resolution ──────────────────────────────────────────────
+
+# ── Visual Basic .NET extractor (regex-based) ─────────────────────────────────
+
+def extract_vb(path: Path) -> dict:
+    """Extract namespaces, classes, interfaces, modules, and methods from a .vb file."""
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"error": f"cannot read {path}"}
+
+    file_nid = _make_id(str(path))
+    nodes: list[dict] = [{"id": file_nid, "label": path.name, "file_type": "code",
+                           "source_file": str(path), "source_location": "L1"}]
+    edges: list[dict] = []
+    defined: set[str] = set()
+    defined.add(file_nid)
+
+    def add_node(nid: str, label: str, lineno: int) -> None:
+        if nid not in defined:
+            defined.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str(path), "source_location": f"L{lineno}"})
+
+    def add_edge(src: str, tgt: str, relation: str, lineno: int) -> None:
+        edges.append({"source": src, "target": tgt, "relation": relation,
+                      "confidence": "EXTRACTED", "source_file": str(path),
+                      "source_location": f"L{lineno}", "weight": 1.0})
+
+    lines = src.splitlines()
+
+    # Imports: Imports System.Collections.Generic
+    for lineno, line in enumerate(lines, start=1):
+        m = re.match(r"^\s*Imports\s+([\w.]+)", line, re.IGNORECASE)
+        if m:
+            module_name = m.group(1).split(".")[-1]
+            tgt_nid = _make_id(module_name)
+            if tgt_nid not in defined:
+                defined.add(tgt_nid)
+                nodes.append({"id": tgt_nid, "label": module_name, "file_type": "code",
+                               "source_file": "", "source_location": ""})
+            add_edge(file_nid, tgt_nid, "imports", lineno)
+
+    # Namespaces
+    for lineno, line in enumerate(lines, start=1):
+        m = re.match(r"^\s*Namespace\s+(\w+)", line, re.IGNORECASE)
+        if m:
+            ns_name = m.group(1)
+            ns_nid = _make_id(str(path), ns_name)
+            add_node(ns_nid, ns_name, lineno)
+            add_edge(file_nid, ns_nid, "contains", lineno)
+
+    # Classes, Interfaces, Modules, Structures
+    type_pattern = re.compile(
+        r"^\s*(?:Public|Private|Protected|Friend|Partial|MustInherit|NotInheritable)?\s*"
+        r"(?:Public|Private|Protected|Friend|Partial|MustInherit|NotInheritable)?\s*"
+        r"(Class|Interface|Module|Structure)\s+(\w+)",
+        re.IGNORECASE,
+    )
+    # Inherits statement (may be on the next line after Class declaration)
+    inherits_pattern = re.compile(r"^\s*Inherits\s+(\w+)", re.IGNORECASE)
+    class_nids: dict[str, str] = {}  # name → nid
+    last_class_nid: str | None = None
+    for lineno, line in enumerate(lines, start=1):
+        m = type_pattern.match(line)
+        if m:
+            type_name = m.group(2)
+            type_nid = _make_id(str(path), type_name)
+            add_node(type_nid, type_name, lineno)
+            add_edge(file_nid, type_nid, "contains", lineno)
+            class_nids[type_name.lower()] = type_nid
+            last_class_nid = type_nid
+            continue
+
+        # Check for Inherits statement (immediately follows Class declaration in VB)
+        m_inh = inherits_pattern.match(line)
+        if m_inh and last_class_nid:
+            base_name = m_inh.group(1)
+            base_nid = _make_id(base_name)
+            if base_nid not in defined:
+                defined.add(base_nid)
+                nodes.append({"id": base_nid, "label": base_name, "file_type": "code",
+                              "source_file": "", "source_location": ""})
+            add_edge(last_class_nid, base_nid, "inherits", lineno)
+
+    # Methods/Functions/Properties/Sub inside classes
+    method_pattern = re.compile(
+        r"^\s*(?:Public|Private|Protected|Friend|Overridable|Overrides|Shared|"
+        r"MustOverride|NotOverridable|Static)?\s*"
+        r"(?:Public|Private|Protected|Friend|Overridable|Overrides|Shared|"
+        r"MustOverride|NotOverridable|Static)?\s*"
+        r"(Sub|Function|Property)\s+(\w+)\s*[(\[]?",
+        re.IGNORECASE,
+    )
+    # Track current class for method ownership - simple heuristic: last class defined before method
+    current_class_nid: str | None = None
+    current_class_line = 0
+    for lineno, line in enumerate(lines, start=1):
+        # Check if we entered a new class scope
+        m_class = type_pattern.match(line)
+        if m_class:
+            type_name = m_class.group(2)
+            nid = class_nids.get(type_name.lower())
+            if nid:
+                current_class_nid = nid
+                current_class_line = lineno
+            continue
+
+        m = method_pattern.match(line)
+        if m:
+            method_name = m.group(2)
+            if method_name.lower() in ("new",):  # Constructor
+                method_name = "New"
+            line_nid = _make_id(str(path), method_name, str(lineno))
+            label = f".{method_name}()" if current_class_nid else f"{method_name}()"
+            add_node(line_nid, label, lineno)
+            parent = current_class_nid if current_class_nid else file_nid
+            relation = "method" if current_class_nid else "contains"
+            add_edge(parent, line_nid, relation, lineno)
+
+    valid_ids = defined
+    clean_edges = [e for e in edges
+                   if e["source"] in valid_ids and (e["target"] in valid_ids or e["relation"] == "imports")]
+    return {"nodes": nodes, "edges": clean_edges}
+
+
+# ── XAML extractor (XML-based) ────────────────────────────────────────────────
+
+def extract_xaml(path: Path) -> dict:
+    """Extract root type, x:Class, named elements, event handlers, and custom controls from a .xaml file."""
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"error": f"cannot read {path}"}
+
+    file_nid = _make_id(str(path))
+    nodes: list[dict] = [{"id": file_nid, "label": path.name, "file_type": "code",
+                           "source_file": str(path), "source_location": "L1"}]
+    edges: list[dict] = []
+    defined: set[str] = set()
+    defined.add(file_nid)
+
+    def add_node(nid: str, label: str) -> None:
+        if nid not in defined:
+            defined.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": str(path), "source_location": None})
+
+    def add_edge(src: str, tgt: str, relation: str) -> None:
+        edges.append({"source": src, "target": tgt, "relation": relation,
+                      "confidence": "EXTRACTED",
+                      "source_file": str(path), "source_location": None, "weight": 1.0})
+
+    # x:Class attribute → defines the code-behind class
+    xclass_match = re.search(r'x:Class=["\']([^"\']+)["\']', src)
+    root_nid = file_nid
+    if xclass_match:
+        xclass = xclass_match.group(1)
+        class_name = xclass.split(".")[-1]
+        root_nid = _make_id(str(path), class_name)
+        add_node(root_nid, class_name)
+        add_edge(file_nid, root_nid, "defines")
+
+    # x:Name attributes → named UI elements
+    for m in re.finditer(r'x:Name=["\'](\w+)["\']', src):
+        elem_name = m.group(1)
+        elem_nid = _make_id(str(path), elem_name)
+        add_node(elem_nid, elem_name)
+        add_edge(root_nid, elem_nid, "contains")
+
+    # Event handler attributes (e.g. Click="Handler", Loaded="OnLoaded")
+    event_pattern = re.compile(
+        r'(?:Click|Loaded|Unloaded|SelectionChanged|TextChanged|KeyDown|KeyUp|'
+        r'MouseDown|MouseUp|MouseEnter|MouseLeave|GotFocus|LostFocus|'
+        r'Checked|Unchecked|ValueChanged|Tapped|DoubleTapped|'
+        r'CanExecuteChanged|CommandBinding)=["\'](\w+)["\']'
+    )
+    seen_handlers: set[str] = set()
+    for m in event_pattern.finditer(src):
+        handler = m.group(1)
+        if handler in seen_handlers:
+            continue
+        seen_handlers.add(handler)
+        handler_nid = _make_id(str(path), handler)
+        add_node(handler_nid, f"{handler}()")
+        add_edge(root_nid, handler_nid, "handles_event")
+
+    # Custom controls: elements with a namespace prefix (e.g. <local:MyControl>,
+    # <views:LoginView>) — skip standard xmlns prefixes
+    _BUILTIN_PREFIXES = frozenset({"x", "d", "mc", "xmlns", "System", "w", "wpf", "ui", "i", "ei", "b", "cal", "prism"})
+    for m in re.finditer(r"<(\w+):(\w[\w.]*)", src):
+        prefix, tag = m.group(1), m.group(2)
+        if prefix in _BUILTIN_PREFIXES:
+            continue
+        ctrl_nid = _make_id(tag)
+        add_node(ctrl_nid, tag)
+        add_edge(root_nid, ctrl_nid, "uses_control")
+
+    valid_ids = defined
+    clean_edges = [e for e in edges if e["source"] in valid_ids and e["target"] in valid_ids]
+    return {"nodes": nodes, "edges": clean_edges}
+
+
+
 
 def _resolve_cross_file_imports(
     per_file: list[dict],
@@ -3141,6 +3343,8 @@ def extract(paths: list[Path], cache_root: Path | None = None) -> dict:
         ".dart": extract_dart,
         ".v": extract_verilog,
         ".sv": extract_verilog,
+        ".vb": extract_vb,
+        ".xaml": extract_xaml,
     }
 
     total = len(paths)
@@ -3249,9 +3453,9 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
     _EXTENSIONS = {
         ".py", ".js", ".ts", ".tsx", ".go", ".rs",
         ".java", ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp",
-        ".rb", ".cs", ".kt", ".kts", ".scala", ".php", ".swift",
+        ".rb", ".cs", ".vb", ".kt", ".kts", ".scala", ".php", ".swift",
         ".lua", ".toc", ".zig", ".ps1",
-        ".m", ".mm",
+        ".m", ".mm", ".xaml",
     }
     from graphify.detect import _load_graphifyignore, _is_ignored
     ignore_root = root if root is not None else target

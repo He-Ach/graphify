@@ -1,4 +1,4 @@
-"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia."""
+"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, VB, XAML."""
 from __future__ import annotations
 from pathlib import Path
 import pytest
@@ -6,6 +6,7 @@ from graphify.extract import (
     extract_java, extract_c, extract_cpp, extract_ruby,
     extract_csharp, extract_kotlin, extract_scala, extract_php,
     extract_swift, extract_go, extract_julia,
+    extract_vb, extract_xaml,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -560,3 +561,91 @@ def test_julia_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids, f"Dangling source: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Visual Basic .NET
+# ---------------------------------------------------------------------------
+
+
+def test_vb_no_error():
+    r = extract_vb(FIXTURES / "sample.vb")
+    assert "error" not in r
+
+
+def test_vb_finds_class():
+    r = extract_vb(FIXTURES / "sample.vb")
+    assert any("DataProcessor" in l for l in _labels(r))
+
+
+def test_vb_finds_interface():
+    r = extract_vb(FIXTURES / "sample.vb")
+    assert any("IProcessor" in l for l in _labels(r))
+
+
+def test_vb_finds_methods():
+    r = extract_vb(FIXTURES / "sample.vb")
+    labels = _labels(r)
+    assert any("Process" in l for l in labels)
+    assert any("Reset" in l for l in labels)
+
+
+def test_vb_finds_imports():
+    r = extract_vb(FIXTURES / "sample.vb")
+    assert "imports" in _relations(r)
+
+
+def test_vb_finds_inherits():
+    r = extract_vb(FIXTURES / "sample.vb")
+    assert "inherits" in _relations(r)
+
+
+def test_vb_no_dangling_edges():
+    r = extract_vb(FIXTURES / "sample.vb")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"Dangling source: {e}"
+
+
+# ---------------------------------------------------------------------------
+# XAML
+# ---------------------------------------------------------------------------
+
+def test_xaml_no_error():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    assert "error" not in r
+
+
+def test_xaml_finds_xclass():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    assert any("MainWindow" in l for l in _labels(r))
+
+
+def test_xaml_finds_named_elements():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    labels = _labels(r)
+    assert any("searchBox" in l for l in labels)
+    assert any("submitButton" in l for l in labels)
+    assert any("resultsList" in l for l in labels)
+
+
+def test_xaml_finds_event_handlers():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    labels = _labels(r)
+    assert any("submitButton_Click" in l for l in labels)
+    assert any("searchBox_TextChanged" in l for l in labels)
+
+
+def test_xaml_finds_custom_controls():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    labels = _labels(r)
+    assert any("SearchPanel" in l for l in labels)
+    assert any("DetailView" in l for l in labels)
+
+
+def test_xaml_no_dangling_edges():
+    r = extract_xaml(FIXTURES / "sample.xaml")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"Dangling source: {e}"
+
